@@ -57,7 +57,3 @@ The lineup editor will allow the user to:
 - There will be no "suggest lineup" button; the lineup is pre-populated and then fully user-editable.
 - A summary panel will show sit counts and position rotations for fairness review.
 - The lineup card will be exportable as a PDF, matching the provided example format.
-
----
-
-Please review and provide feedback or clarifications before implementation.
