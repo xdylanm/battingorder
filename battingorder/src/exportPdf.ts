@@ -9,26 +9,26 @@ export function exportLineupPdf(
   playerMap: Record<string, Player>,
   grid: Record<string, string[]>,
   scratchIds: Set<string>,
+  notes = '',
   teamName = 'Blue Jays U17C',
 ) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 12;
 
-  // ── Pallette ─────────────────────────────────────────────────────────────────
-  const BLUE       = [13,  71, 161] as [number,number,number];
-  const LIGHT_BLUE = [222, 235, 255] as [number,number,number];
-  const INFIELD_BG = [232, 245, 233] as [number,number,number]; // green tint
-  const OUTFIELD_BG= [255, 243, 224] as [number,number,number]; // orange tint
-  const SIT_BG     = [255, 205, 210] as [number,number,number]; // red tint
-  const HEADER_BG  = [236, 239, 241] as [number,number,number]; // light grey
+  // ── Palette (black & white) ──────────────────────────────────────────────────
+  const BLACK      = [0,   0,   0]   as [number,number,number];
+  const WHITE      = [255, 255, 255] as [number,number,number];
   const DARK       = [33,  33,  33]  as [number,number,number];
-  const SCRATCH_RED= [183,  28,  28]  as [number,number,number];
+  const HEADER_BG  = [50,  50,  50]  as [number,number,number]; // dark grey header
+  const ROW_ALT    = [240, 240, 240] as [number,number,number]; // light grey alternating rows
+  const BORDER     = [150, 150, 150] as [number,number,number];
+  const SIT_BG     = [200, 200, 200] as [number,number,number]; // mid-grey for sits
 
   // ── Title ────────────────────────────────────────────────────────────────────
-  doc.setFillColor(...BLUE);
+  doc.setFillColor(...HEADER_BG);
   doc.rect(0, 0, pageW, 20, 'F');
-  doc.setTextColor(255, 255, 255);
+  doc.setTextColor(...WHITE);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
   doc.text(`${teamName} Game Card`, margin, 13);
@@ -53,18 +53,18 @@ export function exportLineupPdf(
       const x = margin + colIdx * infoColW;
       const h = 8;
       if (rowIdx === 0) {
-        doc.setFillColor(...HEADER_BG);
+        doc.setFillColor(...ROW_ALT);
         doc.rect(x, y, infoColW, h, 'F');
-        doc.setDrawColor(180, 180, 180);
+        doc.setDrawColor(...BORDER);
         doc.rect(x, y, infoColW, h, 'S');
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(9);
         doc.setTextColor(...DARK);
         doc.text(cell, x + 3, y + 5.5);
       } else {
-        doc.setFillColor(255, 255, 255);
+        doc.setFillColor(...WHITE);
         doc.rect(x, y, infoColW, h, 'F');
-        doc.setDrawColor(180, 180, 180);
+        doc.setDrawColor(...BORDER);
         doc.rect(x, y, infoColW, h, 'S');
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(9);
@@ -79,7 +79,7 @@ export function exportLineupPdf(
   y += 4;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.setTextColor(...BLUE);
+  doc.setTextColor(...BLACK);
   doc.text('Lineup', margin, y);
   y += 5;
 
@@ -92,9 +92,9 @@ export function exportLineupPdf(
   const rowH = 8;
 
   // ── Lineup header ─────────────────────────────────────────────────────────────
-  doc.setFillColor(...BLUE);
+  doc.setFillColor(...HEADER_BG);
   doc.rect(margin, y, tableContentW, rowH, 'F');
-  doc.setTextColor(255, 255, 255);
+  doc.setTextColor(...WHITE);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
 
@@ -117,10 +117,10 @@ export function exportLineupPdf(
     const player = playerMap[playerId];
     if (!player) return;
 
-    const rowBg: [number,number,number] = rowIdx % 2 === 0 ? [255,255,255] : [248,249,250];
+    const rowBg: [number,number,number] = rowIdx % 2 === 0 ? WHITE : ROW_ALT;
     doc.setFillColor(...rowBg);
     doc.rect(margin, y, tableContentW, rowH, 'F');
-    doc.setDrawColor(210, 210, 210);
+    doc.setDrawColor(...BORDER);
     doc.rect(margin, y, tableContentW, rowH, 'S');
 
     doc.setTextColor(...DARK);
@@ -146,20 +146,16 @@ export function exportLineupPdf(
         doc.setFillColor(...SIT_BG);
         doc.rect(x, y, innW, rowH, 'F');
         doc.setFont('helvetica', 'bold');
-        doc.setTextColor(...SCRATCH_RED);
-        doc.text('X', x + innW / 2, y + 5.5, { align: 'center' });
         doc.setTextColor(...DARK);
+        doc.text('X', x + innW / 2, y + 5.5, { align: 'center' });
       } else if (pos) {
-        const isP = pos === 'P', isC = pos === 'C';
-        const isIF = ['1B','2B','3B','SS'].includes(pos);
-        const bg: [number,number,number] = isP || isC ? LIGHT_BLUE : isIF ? INFIELD_BG : OUTFIELD_BG;
-        doc.setFillColor(...bg);
+        doc.setFillColor(...rowBg);
         doc.rect(x, y, innW, rowH, 'F');
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(...DARK);
         doc.text(pos, x + innW / 2, y + 5.5, { align: 'center' });
       }
-      doc.setDrawColor(210, 210, 210);
+      doc.setDrawColor(...BORDER);
       doc.line(x, y, x, y + rowH);
       x += innW;
     });
@@ -172,12 +168,12 @@ export function exportLineupPdf(
     y += 6;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
-    doc.setTextColor(...BLUE);
+    doc.setTextColor(...BLACK);
     doc.text('Scratches', margin, y);
     y += 5;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
-    doc.setTextColor(...SCRATCH_RED);
+    doc.setTextColor(...DARK);
     const names = [...scratchIds].map(id => playerMap[id]?.name ?? id).join(', ');
     doc.text(names, margin, y);
     y += 6;
@@ -185,15 +181,30 @@ export function exportLineupPdf(
 
   // ── Notes area ────────────────────────────────────────────────────────────────
   y += 6;
-  const notesH = 40;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.setTextColor(...BLUE);
+  doc.setTextColor(...BLACK);
   doc.text('Notes', margin, y);
-  y += 4;
-  doc.setFillColor(250, 250, 250);
-  doc.setDrawColor(180, 180, 180);
-  doc.rect(margin, y, tableContentW, notesH, 'FD');
+  y += 5;
+
+  if (notes.trim()) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(...DARK);
+    const lines = doc.splitTextToSize(notes.trim(), tableContentW - 4);
+    const notesTextH = lines.length * 5 + 4;
+    doc.setFillColor(...ROW_ALT);
+    doc.setDrawColor(...BORDER);
+    doc.rect(margin, y, tableContentW, notesTextH, 'FD');
+    doc.text(lines, margin + 2, y + 5);
+    y += notesTextH;
+  } else {
+    // blank box
+    const notesH = 35;
+    doc.setFillColor(250, 250, 250);
+    doc.setDrawColor(...BORDER);
+    doc.rect(margin, y, tableContentW, notesH, 'FD');
+  }
 
   doc.save(
     `GameCard-${game.opponent.replace(/\s+/g, '_')}-${new Date(game.starttime).toLocaleDateString('en-CA')}.pdf`,

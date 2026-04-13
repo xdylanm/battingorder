@@ -1,9 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Box, Typography, Paper, Chip, Select, MenuItem, FormControl,
   Button, Divider, Alert, Tooltip, IconButton, CircularProgress,
   FormControlLabel, Checkbox, Table, TableBody, TableCell,
-  TableHead, TableRow, Menu,
+  TableHead, TableRow, Menu, InputBase, TextField,
 } from '@mui/material';
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import {
@@ -70,6 +70,49 @@ function PositionCell({ value, onChange, conflict, disabled }: PositionCellProps
   );
 }
 
+// ─── Jersey cell ─────────────────────────────────────────────────────────────
+
+interface JerseyCellProps {
+  value: string;
+  isOverridden: boolean;
+  onChange: (val: string) => void;
+}
+
+function JerseyCell({ value, isOverridden, onChange }: JerseyCellProps) {
+  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  if (editing) {
+    return (
+      <InputBase
+        inputRef={inputRef}
+        value={value}
+        autoFocus
+        onChange={e => onChange(e.target.value)}
+        onBlur={() => setEditing(false)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditing(false); }}
+        inputProps={{ maxLength: 4, style: { textAlign: 'center', width: 36, fontSize: 13, padding: 2 } }}
+        sx={{ bgcolor: '#fff9c4', borderRadius: 1, border: '1.5px solid #f9a825' }}
+      />
+    );
+  }
+  return (
+    <Box
+      onClick={() => setEditing(true)}
+      sx={{
+        minWidth: 32, textAlign: 'center', borderRadius: 1, px: 0.5, py: 0.25,
+        fontSize: 13, color: isOverridden ? '#7b5800' : '#666',
+        bgcolor: isOverridden ? '#fff9c4' : 'transparent',
+        border: isOverridden ? '1.5px solid #f9a825' : '1.5px solid transparent',
+        cursor: 'pointer',
+        '&:hover': { borderColor: '#1976d2' },
+      }}
+    >
+      {value || '–'}
+    </Box>
+  );
+}
+
 // ─── Sortable row ─────────────────────────────────────────────────────────────
 
 interface SortableRowProps {
@@ -79,10 +122,12 @@ interface SortableRowProps {
   entry: { positions: string[] };
   isScratch: boolean;
   conflictCells: Set<number>;
+  jerseyOverride: string | null;
   onCellChange: (inning: number, val: string) => void;
+  onJerseyChange: (val: string) => void;
 }
 
-function SortableRow({ id, order, player, entry, isScratch, conflictCells, onCellChange }: SortableRowProps) {
+function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerseyOverride, onCellChange, onJerseyChange }: SortableRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
 
@@ -101,8 +146,12 @@ function SortableRow({ id, order, player, entry, isScratch, conflictCells, onCel
         </IconButton>
       </TableCell>
       <TableCell sx={{ width: 32, textAlign: 'center', fontWeight: 600, color: '#888' }}>{order}</TableCell>
-      <TableCell sx={{ width: 36, textAlign: 'center', color: '#666' }}>
-        {player.jersey_number ?? ''}
+      <TableCell sx={{ width: 36, textAlign: 'center', p: 0.25 }}>
+        <JerseyCell
+          value={jerseyOverride !== null ? jerseyOverride : (player.jersey_number != null ? String(player.jersey_number) : '')}
+          isOverridden={jerseyOverride !== null}
+          onChange={onJerseyChange}
+        />
       </TableCell>
       <TableCell sx={{ minWidth: 120, fontWeight: isScratch ? 400 : 600, color: isScratch ? '#999' : 'inherit' }}>
         {player.name}{isScratch ? ' (Scratch)' : ''}
@@ -207,8 +256,12 @@ export default function LineupEditor({ game, onClose }: Props) {
   const [expandCatcher, setExpandCatcher] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
   const [prevLineup, setPrevLineup] = useState<LineupEntry[] | null>(null);
   const [populated, setPopulated] = useState(false);
+  const [jerseyOverrides, setJerseyOverrides] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState(game.notes ?? '');
 
   const playerMap: Record<string, Player> = Object.fromEntries(allPlayers.map(p => [p.id, p]));
 
@@ -246,6 +299,14 @@ export default function LineupEditor({ game, onClose }: Props) {
       // Load existing lineup for this game
       const { data: existingLineup } = await supabase
         .from('lineup').select('*').eq('game_id', game.id);
+
+      // Restore pitcher assignments if saved on the game
+      if (game.pitcher_assignments && game.pitcher_assignments.length > 0) {
+        setPitcherAssignments(game.pitcher_assignments);
+      }
+      if (game.notes) {
+        setNotes(game.notes);
+      }
 
       if (existingLineup && existingLineup.length > 0) {
         // Restore state from saved lineup
@@ -342,30 +403,60 @@ export default function LineupEditor({ game, onClose }: Props) {
 
   const handleSave = async () => {
     setSaving(true);
-    // Delete existing entries for this game
-    await supabase.from('lineup').delete().eq('game_id', game.id);
-    const entries = [
-      ...battingOrder.map((playerId, idx) => ({
-        game_id: game.id,
-        player_id: playerId,
-        is_scratch: false,
-        batting_order: idx + 1,
-        sit_count: gameSitCounts[playerId] ?? 0,
-        positions: grid[playerId] ?? Array(9).fill(''),
-        notes: '',
-      })),
-      ...[...scratchIds].map(playerId => ({
-        game_id: game.id,
-        player_id: playerId,
-        is_scratch: true,
-        batting_order: null,
-        sit_count: 0,
-        positions: Array(9).fill(''),
-        notes: '',
-      })),
-    ];
-    await supabase.from('lineup').insert(entries);
-    setSaving(false);
+    setSaveError(null);
+    setSaveSuccess(false);
+
+    try {
+      const { error: deleteErr } = await supabase.from('lineup').delete().eq('game_id', game.id);
+      if (deleteErr) {
+        setSaveError(`Save failed (delete): ${deleteErr.message}`);
+        return;
+      }
+
+      const entries = [
+        ...battingOrder.map((playerId, idx) => ({
+          game_id: game.id,
+          player_id: playerId,
+          is_scratch: false,
+          batting_order: idx + 1,
+          sit_count: gameSitCounts[playerId] ?? 0,
+          positions: grid[playerId] ?? Array(9).fill(''),
+          notes: '',
+        })),
+        ...[...scratchIds].map(playerId => ({
+          game_id: game.id,
+          player_id: playerId,
+          is_scratch: true,
+          batting_order: null,
+          sit_count: 0,
+          positions: Array(9).fill(''),
+          notes: '',
+        })),
+      ];
+
+      const { error: insertErr } = await supabase.from('lineup').insert(entries);
+      if (insertErr) {
+        setSaveError(`Save failed (insert): ${insertErr.message}`);
+        return;
+      }
+
+      // Best-effort: save pitcher assignments and notes — requires those columns on games table
+      const { error: updateErr } = await supabase
+        .from('games')
+        .update({ pitcher_assignments: pitcherAssignments, notes })
+        .eq('id', game.id);
+      if (updateErr) {
+        // Lineup is saved; warn but don't block
+        setSaveError(`Lineup saved, but game fields failed: ${updateErr.message}`);
+      }
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (e) {
+      setSaveError(`Unexpected error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSaveAsDefault = async () => {
@@ -399,7 +490,7 @@ export default function LineupEditor({ game, onClose }: Props) {
   };
 
   const handleExportPdf = () => {
-    exportLineupPdf(game, battingOrder, playerMap, grid, scratchIds);
+    exportLineupPdf(game, battingOrder, playerMap, grid, scratchIds, notes);
   };
 
   // ─── Render ──────────────────────────────────────────────────────────────────
@@ -535,7 +626,9 @@ export default function LineupEditor({ game, onClose }: Props) {
                       entry={{ positions: grid[playerId] ?? Array(9).fill('') }}
                       isScratch={scratchIds.has(playerId)}
                       conflictCells={conflictCellsByPlayer[playerId] ?? new Set()}
+                      jerseyOverride={jerseyOverrides[playerId] ?? null}
                       onCellChange={(inning, val) => handleCellChange(playerId, inning, val)}
+                      onJerseyChange={val => setJerseyOverrides(prev => ({ ...prev, [playerId]: val }))}
                     />
                   );
                 })}
@@ -567,15 +660,29 @@ export default function LineupEditor({ game, onClose }: Props) {
         conflicts={conflicts}
       />
 
+      {/* Notes */}
+      <Paper sx={{ p: 2, mt: 2 }}>
+        <Typography variant="h6" gutterBottom>Notes</Typography>
+        <TextField
+          multiline
+          minRows={3}
+          fullWidth
+          placeholder="Goals, reminders, anything for the game card…"
+          value={notes}
+          onChange={e => setNotes(e.target.value)}
+        />
+      </Paper>
+
       {/* Actions */}
-      <Box sx={{ display: 'flex', gap: 2, mt: 2, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', gap: 2, mt: 2, flexWrap: 'wrap', alignItems: 'center' }}>
         <Button
           variant="contained"
           onClick={handleSave}
           disabled={saving}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
+          color={saveSuccess ? 'success' : 'primary'}
         >
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? 'Saving…' : saveSuccess ? 'Saved ✓' : 'Save'}
         </Button>
         <Button variant="outlined" onClick={handleSaveAsDefault}>
           Save as Default
@@ -583,6 +690,11 @@ export default function LineupEditor({ game, onClose }: Props) {
         <Button variant="outlined" onClick={handleExportPdf}>
           Export PDF
         </Button>
+        {saveError && (
+          <Alert severity="error" onClose={() => setSaveError(null)} sx={{ py: 0 }}>
+            {saveError}
+          </Alert>
+        )}
       </Box>
     </Box>
   );

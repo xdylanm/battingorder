@@ -17,6 +17,8 @@ export interface Game {
   location: string;
   opponent: string;
   tags: string[];
+  pitcher_assignments?: PitcherAssignment[] | null;
+  notes?: string | null;
 }
 
 export interface LineupEntry {

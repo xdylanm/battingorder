@@ -4,11 +4,12 @@ import { AuthProvider, useAuth } from './AuthContext';
 import PlayerManager from './PlayerManager';
 import GameManager from './GameManager';
 import LineupEditor from './LineupEditor';
+import TokenGate from './TokenGate';
 import type { Game } from './types';
 import './App.css';
 
 function AppContent() {
-  const { user, loading, signIn, signOut } = useAuth();
+  const { user, loading, isAllowed, signIn, signOut } = useAuth();
   const [tab, setTab] = useState(0);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
 
@@ -22,6 +23,10 @@ function AppContent() {
         <Button variant="contained" size="large" onClick={signIn}>Sign in with Google</Button>
       </Box>
     );
+  }
+
+  if (!isAllowed) {
+    return <TokenGate />;
   }
 
   return (
