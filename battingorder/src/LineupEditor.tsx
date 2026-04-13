@@ -29,14 +29,19 @@ interface PositionCellProps {
   onChange: (val: string) => void;
   conflict?: boolean;
   disabled?: boolean;
+  missingPositions?: string[];
+  avoidPositions?: string[];
 }
 
-function PositionCell({ value, onChange, conflict, disabled }: PositionCellProps) {
+function PositionCell({ value, onChange, conflict, disabled, missingPositions, avoidPositions }: PositionCellProps) {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const isAvoid = value && avoidPositions?.includes(value);
   const cellColor =
-    value === 'X' ? '#ffe0e0' :
+    value === 'X' ? '#e0e0e0' :        // sit → gray
+    isAvoid ? '#ffe0e0' :              // avoid-position → red
     value === '' ? '#f5f5f5' :
     conflict ? '#fff3cd' : '#e8f5e9';
+  const missingSet = new Set(missingPositions ?? []);
   return (
     <>
       <Box
@@ -44,7 +49,8 @@ function PositionCell({ value, onChange, conflict, disabled }: PositionCellProps
         sx={{
           minWidth: 40, textAlign: 'center', borderRadius: 1, px: 0.5, py: 0.25,
           bgcolor: cellColor, cursor: disabled ? 'default' : 'pointer',
-          fontWeight: 600, fontSize: 13, color: value === 'X' ? '#c62828' : 'inherit',
+          fontWeight: 600, fontSize: 13,
+          color: value === 'X' ? '#555' : isAvoid ? '#c62828' : 'inherit',
           border: conflict ? '1.5px solid #f9a825' : '1.5px solid transparent',
           '&:hover': disabled ? {} : { borderColor: '#1976d2' },
         }}
@@ -56,12 +62,16 @@ function PositionCell({ value, onChange, conflict, disabled }: PositionCellProps
           <em>Clear</em>
         </MenuItem>
         <MenuItem onClick={() => { onChange('X'); setAnchorEl(null); }}
-          sx={{ color: '#c62828', fontWeight: 600 }}>
+          sx={{ color: '#555', fontWeight: 600 }}>
           X (Sit)
         </MenuItem>
         <Divider />
         {ALL_POSITIONS.map(pos => (
-          <MenuItem key={pos} onClick={() => { onChange(pos); setAnchorEl(null); }}>
+          <MenuItem
+            key={pos}
+            onClick={() => { onChange(pos); setAnchorEl(null); }}
+            sx={{ fontWeight: missingSet.has(pos) ? 700 : 400 }}
+          >
             {pos}
           </MenuItem>
         ))}
@@ -123,11 +133,12 @@ interface SortableRowProps {
   isScratch: boolean;
   conflictCells: Set<number>;
   jerseyOverride: string | null;
+  missingPositionsByInning: Record<number, string[]>;
   onCellChange: (inning: number, val: string) => void;
   onJerseyChange: (val: string) => void;
 }
 
-function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerseyOverride, onCellChange, onJerseyChange }: SortableRowProps) {
+function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerseyOverride, missingPositionsByInning, onCellChange, onJerseyChange }: SortableRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
 
@@ -165,6 +176,8 @@ function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerse
               value={entry.positions[innIdx] ?? ''}
               onChange={val => onCellChange(innIdx, val)}
               conflict={conflictCells.has(innIdx)}
+              missingPositions={missingPositionsByInning[innIdx]}
+              avoidPositions={player.avoid_positions}
             />
           )}
         </TableCell>
@@ -258,10 +271,13 @@ export default function LineupEditor({ game, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [defaultSaveSuccess, setDefaultSaveSuccess] = useState(false);
   const [prevLineup, setPrevLineup] = useState<LineupEntry[] | null>(null);
   const [populated, setPopulated] = useState(false);
   const [jerseyOverrides, setJerseyOverrides] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState(game.notes ?? '');
+  const battingOrderRef = useRef<string[]>([]);
+  battingOrderRef.current = battingOrder;
 
   const playerMap: Record<string, Player> = Object.fromEntries(allPlayers.map(p => [p.id, p]));
 
@@ -271,7 +287,14 @@ export default function LineupEditor({ game, onClose }: Props) {
 
   // Conflict inning sets per player
   const conflictCellsByPlayer: Record<string, Set<number>> = {};
+  // Missing positions per inning (union across all conflict entries for that inning)
+  const missingPositionsByInning: Record<number, string[]> = {};
   for (const c of conflicts) {
+    if (c.missingPositions && c.missingPositions.length > 0) {
+      if (!missingPositionsByInning[c.inning]) missingPositionsByInning[c.inning] = [];
+      const existing = new Set(missingPositionsByInning[c.inning]);
+      for (const p of c.missingPositions) if (!existing.has(p)) missingPositionsByInning[c.inning].push(p);
+    }
     if (c.type === 'duplicate') {
       for (const id of battingOrder) {
         if (grid[id]?.[c.inning] && grid[id][c.inning] !== 'X' && grid[id][c.inning] !== '') {
@@ -346,9 +369,14 @@ export default function LineupEditor({ game, onClose }: Props) {
 
   // ─── Populate lineup ────────────────────────────────────────────────────────
 
-  const populate = useCallback(() => {
+  const populate = useCallback((keepOrder = false) => {
     if (allPlayers.length === 0) return;
-    const result = buildLineup(allPlayers, scratchIds, pitcherAssignments.filter(p => p.pitcherId), prevLineup);
+    const result = buildLineup(
+      allPlayers, scratchIds,
+      pitcherAssignments.filter(p => p.pitcherId),
+      prevLineup,
+      keepOrder ? battingOrderRef.current : undefined,
+    );
     setBattingOrder(result.battingOrder);
     setGrid(result.grid);
     setGameSitCounts(result.gameSitCounts);
@@ -366,9 +394,26 @@ export default function LineupEditor({ game, onClose }: Props) {
 
   const handleScratchChange = (playerId: string, checked: boolean) => {
     const next = new Set(scratchIds);
-    if (checked) next.add(playerId); else next.delete(playerId);
-    setScratchIds(next);
-    setPopulated(false); // will trigger re-populate
+    if (checked) {
+      // Scratching a player: remove from batting order and grid
+      next.add(playerId);
+      setScratchIds(next);
+      setBattingOrder(prev => prev.filter(id => id !== playerId));
+      setGrid(prev => {
+        const updated = { ...prev };
+        delete updated[playerId];
+        return updated;
+      });
+    } else {
+      // Activating a player: append to end, sit for all 5 innings
+      next.delete(playerId);
+      setScratchIds(next);
+      setBattingOrder(prev => [...prev, playerId]);
+      setGrid(prev => ({
+        ...prev,
+        [playerId]: ['X', 'X', 'X', 'X', 'X', '', '', '', ''],
+      }));
+    }
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -409,6 +454,7 @@ export default function LineupEditor({ game, onClose }: Props) {
     try {
       const { error: deleteErr } = await supabase.from('lineup').delete().eq('game_id', game.id);
       if (deleteErr) {
+        console.error('lineup delete failed', deleteErr);
         setSaveError(`Save failed (delete): ${deleteErr.message}`);
         return;
       }
@@ -421,7 +467,6 @@ export default function LineupEditor({ game, onClose }: Props) {
           batting_order: idx + 1,
           sit_count: gameSitCounts[playerId] ?? 0,
           positions: grid[playerId] ?? Array(9).fill(''),
-          notes: '',
         })),
         ...[...scratchIds].map(playerId => ({
           game_id: game.id,
@@ -430,12 +475,12 @@ export default function LineupEditor({ game, onClose }: Props) {
           batting_order: null,
           sit_count: 0,
           positions: Array(9).fill(''),
-          notes: '',
         })),
       ];
 
       const { error: insertErr } = await supabase.from('lineup').insert(entries);
       if (insertErr) {
+        console.error('lineup insert failed', insertErr);
         setSaveError(`Save failed (insert): ${insertErr.message}`);
         return;
       }
@@ -446,6 +491,7 @@ export default function LineupEditor({ game, onClose }: Props) {
         .update({ pitcher_assignments: pitcherAssignments, notes })
         .eq('id', game.id);
       if (updateErr) {
+        console.error('games update failed', updateErr);
         // Lineup is saved; warn but don't block
         setSaveError(`Lineup saved, but game fields failed: ${updateErr.message}`);
       }
@@ -483,14 +529,15 @@ export default function LineupEditor({ game, onClose }: Props) {
       is_scratch: false,
       batting_order: idx + 1,
       sit_count: 0,
-      positions: Array(9).fill(''),
-      notes: '',
+      positions: grid[playerId] ?? Array(9).fill(''),
     }));
     await supabase.from('lineup').insert(entries);
+    setDefaultSaveSuccess(true);
+    setTimeout(() => setDefaultSaveSuccess(false), 3000);
   };
 
   const handleExportPdf = () => {
-    exportLineupPdf(game, battingOrder, playerMap, grid, scratchIds, notes);
+    exportLineupPdf(game, battingOrder, playerMap, grid, scratchIds, notes, undefined, jerseyOverrides);
   };
 
   // ─── Render ──────────────────────────────────────────────────────────────────
@@ -586,7 +633,7 @@ export default function LineupEditor({ game, onClose }: Props) {
               Remove last
             </Button>
           )}
-          <Button size="small" variant="contained" onClick={populate} sx={{ ml: 1 }}>
+          <Button size="small" variant="contained" onClick={() => populate(true)} sx={{ ml: 1 }}>
             Re-generate lineup
           </Button>
         </Box>
@@ -627,6 +674,7 @@ export default function LineupEditor({ game, onClose }: Props) {
                       isScratch={scratchIds.has(playerId)}
                       conflictCells={conflictCellsByPlayer[playerId] ?? new Set()}
                       jerseyOverride={jerseyOverrides[playerId] ?? null}
+                      missingPositionsByInning={missingPositionsByInning}
                       onCellChange={(inning, val) => handleCellChange(playerId, inning, val)}
                       onJerseyChange={val => setJerseyOverrides(prev => ({ ...prev, [playerId]: val }))}
                     />
@@ -684,8 +732,12 @@ export default function LineupEditor({ game, onClose }: Props) {
         >
           {saving ? 'Saving…' : saveSuccess ? 'Saved ✓' : 'Save'}
         </Button>
-        <Button variant="outlined" onClick={handleSaveAsDefault}>
-          Save as Default
+        <Button
+          variant="outlined"
+          onClick={handleSaveAsDefault}
+          color={defaultSaveSuccess ? 'success' : 'primary'}
+        >
+          {defaultSaveSuccess ? 'Saved ✓' : 'Save as Default'}
         </Button>
         <Button variant="outlined" onClick={handleExportPdf}>
           Export PDF

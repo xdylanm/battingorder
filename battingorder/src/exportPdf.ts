@@ -11,6 +11,7 @@ export function exportLineupPdf(
   scratchIds: Set<string>,
   notes = '',
   teamName = 'Blue Jays U17C',
+  jerseyOverrides: Record<string, string> = {},
 ) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -133,7 +134,10 @@ export function exportLineupPdf(
     x += colOrder;
     // jersey
     doc.setFont('helvetica', 'normal');
-    doc.text(player.jersey_number != null ? String(player.jersey_number) : '', x + colJsy / 2, y + 5.5, { align: 'center' });
+    const jerseyVal = jerseyOverrides[playerId] !== undefined
+      ? jerseyOverrides[playerId]
+      : (player.jersey_number != null ? String(player.jersey_number) : '');
+    doc.text(jerseyVal, x + colJsy / 2, y + 5.5, { align: 'center' });
     x += colJsy;
     // name
     doc.setFont('helvetica', 'bold');

@@ -162,13 +162,18 @@ export function buildLineup(
   scratchIds: Set<string>,
   pitcherAssignments: PitcherAssignment[],
   prevLineupEntries: LineupEntry[] | null,
+  overrideOrder?: string[],
 ): BuildLineupResult {
   const activePlayers = allPlayers.filter(p => !scratchIds.has(p.id));
   const playerMap = Object.fromEntries(allPlayers.map(p => [p.id, p]));
 
-  // Batting order: use previous, remove scratches, add new players at end
+  // Batting order: use override if provided, else use previous, else default
   let battingOrder: string[];
-  if (prevLineupEntries && prevLineupEntries.length > 0) {
+  if (overrideOrder) {
+    const existingActive = overrideOrder.filter(id => activePlayers.some(p => p.id === id));
+    const newIds = activePlayers.filter(p => !existingActive.includes(p.id)).map(p => p.id);
+    battingOrder = [...existingActive, ...newIds];
+  } else if (prevLineupEntries && prevLineupEntries.length > 0) {
     const prevOrdered = [...prevLineupEntries]
       .filter(e => !e.is_scratch && e.batting_order != null)
       .sort((a, b) => (a.batting_order ?? 999) - (b.batting_order ?? 999))
@@ -193,6 +198,7 @@ export interface Conflict {
   type: 'duplicate' | 'missing';
   inning: number; // 0-based
   message: string;
+  missingPositions?: string[]; // positions not yet assigned in this inning (for 'duplicate' | 'missing')
 }
 
 export function validateGrid(
@@ -200,6 +206,7 @@ export function validateGrid(
   grid: Record<string, string[]>,
   scratchIds: Set<string>,
 ): Conflict[] {
+  const ALL_POSITIONS = ['P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'];
   const conflicts: Conflict[] = [];
   for (let inn = 0; inn < 9; inn++) {
     const posCount: Record<string, number> = {};
@@ -213,12 +220,16 @@ export function validateGrid(
         posCount[pos] = (posCount[pos] ?? 0) + 1;
       }
     }
+    const assignedPositions = new Set(Object.keys(posCount));
+    const missingPositions = ALL_POSITIONS.filter(p => !assignedPositions.has(p));
+
     for (const [pos, count] of Object.entries(posCount)) {
       if (count > 1) {
         conflicts.push({
           type: 'duplicate',
           inning: inn,
-          message: `Inning ${inn + 1}: "${pos}" assigned to ${count} players`,
+          message: `Inning ${inn + 1}: "${pos}" assigned to ${count} players. Unfilled: ${missingPositions.join(', ')}`,
+          missingPositions,
         });
       }
     }
@@ -226,7 +237,8 @@ export function validateGrid(
       conflicts.push({
         type: 'missing',
         inning: inn,
-        message: `Inning ${inn + 1}: ${missingCount} player(s) have no position`,
+        message: `Inning ${inn + 1}: ${missingCount} player(s) have no position. Unfilled: ${missingPositions.join(', ')}`,
+        missingPositions,
       });
     }
   }
