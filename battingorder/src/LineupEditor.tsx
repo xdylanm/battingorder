@@ -496,6 +496,21 @@ export default function LineupEditor({ game, onClose }: Props) {
         setSaveError(`Lineup saved, but game fields failed: ${updateErr.message}`);
       }
 
+      // Increment season outfield_innings and infield_innings per player
+      const INFIELD_POS = new Set(['1B', '2B', '3B', 'SS']);
+      const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']);
+      for (const playerId of battingOrder) {
+        const positions = grid[playerId] ?? [];
+        const ofDelta = positions.filter(p => OUTFIELD_POS.has(p)).length;
+        const ifDelta = positions.filter(p => INFIELD_POS.has(p)).length;
+        if (ofDelta === 0 && ifDelta === 0) continue;
+        const player = playerMap[playerId];
+        await supabase.from('players').update({
+          outfield_innings: (player?.outfield_innings ?? 0) + ofDelta,
+          infield_innings: (player?.infield_innings ?? 0) + ifDelta,
+        }).eq('id', playerId);
+      }
+
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (e) {

@@ -9,6 +9,8 @@ export interface Player {
   preferred_positions: string[];
   avoid_positions: string[];
   sit_count: number;
+  outfield_innings: number;
+  infield_innings: number;
 }
 
 export interface Game {
