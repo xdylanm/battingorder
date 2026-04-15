@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import type { Game, Player } from './types';
+import { BLUE_JAY_FACTS, hashGameId } from './blueJayFacts';
 
 const INNINGS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -27,15 +28,16 @@ export function exportLineupPdf(
   const SIT_BG     = [200, 200, 200] as [number,number,number]; // mid-grey for sits
 
   // ── Title ────────────────────────────────────────────────────────────────────
+  const topOffset = 25.4; // 1 inch — clears clipboard clip
   doc.setFillColor(...HEADER_BG);
-  doc.rect(0, 0, pageW, 20, 'F');
+  doc.rect(0, topOffset, pageW, 20, 'F');
   doc.setTextColor(...WHITE);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
-  doc.text(`${teamName} Game Card`, margin, 13);
+  doc.text(`${teamName} Game Card`, margin, topOffset + 13);
 
   // ── Game info table ───────────────────────────────────────────────────────────
-  let y = 26;
+  let y = topOffset + 26;
   const gameDate = new Date(game.starttime).toLocaleDateString('en-CA', {
     month: 'long', day: 'numeric', year: 'numeric',
   });
@@ -77,7 +79,7 @@ export function exportLineupPdf(
   });
 
   // ── Section title: Lineup ────────────────────────────────────────────────────
-  y += 4;
+  y += 8;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(...BLACK);
@@ -183,32 +185,122 @@ export function exportLineupPdf(
     y += 6;
   }
 
-  // ── Notes area ────────────────────────────────────────────────────────────────
+  // ── Bottom section: Blue Jay Fact (left) + Notes (right) ───────────────────
   y += 6;
+
+  const factW  = Math.round(tableContentW * 0.42);
+  const notesW = tableContentW - factW;
+  const pad    = 2;
+  const lineH  = 5;   // mm per line (conservative for both 8pt and 9pt)
+  const minH   = 35;
+
+  // Select fact deterministically by game ID
+  const fact = BLUE_JAY_FACTS[hashGameId(game.id) % BLUE_JAY_FACTS.length];
+
+  // Compute fact box height
+  doc.setFontSize(8);
+  const factLines = doc.splitTextToSize(fact, factW - pad * 2) as string[];
+  const factBoxH = Math.max(factLines.length * lineH + 4, minH);
+
+  // Compute notes box height
+  let notesLines: string[] = [];
+  let notesBoxH: number;
+  if (notes.trim()) {
+    doc.setFontSize(9);
+    notesLines = doc.splitTextToSize(notes.trim(), notesW - pad * 2) as string[];
+    notesBoxH = Math.max(notesLines.length * lineH + 4, minH);
+  } else {
+    notesBoxH = minH;
+  }
+
+  const sectionH = Math.max(factBoxH, notesBoxH);
+
+  // Section labels
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(...BLACK);
-  doc.text('Notes', margin, y);
+  doc.text('Blue Jay Fact', margin, y);
+  doc.text('Notes', margin + factW, y);
   y += 5;
 
+  // Fact panel (left)
+  doc.setFillColor(...ROW_ALT);
+  doc.setDrawColor(...BORDER);
+  doc.rect(margin, y, factW, sectionH, 'FD');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(...DARK);
+  doc.text(factLines, margin + pad, y + 4);
+
+  // Notes panel (right)
+  doc.setFillColor(250, 250, 250);
+  doc.setDrawColor(...BORDER);
+  doc.rect(margin + factW, y, notesW, sectionH, 'FD');
   if (notes.trim()) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(...DARK);
-    const lines = doc.splitTextToSize(notes.trim(), tableContentW - 4);
-    const notesTextH = lines.length * 5 + 4;
-    doc.setFillColor(...ROW_ALT);
-    doc.setDrawColor(...BORDER);
-    doc.rect(margin, y, tableContentW, notesTextH, 'FD');
-    doc.text(lines, margin + 2, y + 5);
-    y += notesTextH;
-  } else {
-    // blank box
-    const notesH = 35;
-    doc.setFillColor(250, 250, 250);
-    doc.setDrawColor(...BORDER);
-    doc.rect(margin, y, tableContentW, notesH, 'FD');
+    doc.text(notesLines, margin + factW + pad, y + 5);
   }
+  y += sectionH;
+
+  // ── Score by inning ───────────────────────────────────────────────────────────
+  y += 6;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...BLACK);
+  doc.text('Score', margin, y);
+  y += 5;
+
+  const finalColW   = 14;
+  const scoreLabelW = colOrder + colJsy + colName - finalColW;
+  const scoreRowH   = 8;
+  const scoreRows: { label: string; final: string }[] = [
+    { label: teamName,      final: game.our_score != null      ? String(game.our_score)      : '' },
+    { label: game.opponent, final: game.opponent_score != null ? String(game.opponent_score) : '' },
+  ];
+
+  // Score header
+  doc.setFillColor(...HEADER_BG);
+  doc.rect(margin, y, tableContentW, scoreRowH, 'F');
+  doc.setTextColor(...WHITE);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  let sx = margin;
+  doc.text('Team', sx + 3, y + 5.5);
+  sx += scoreLabelW;
+  INNINGS.forEach(inn => {
+    doc.text(String(inn), sx + innW / 2, y + 5.5, { align: 'center' });
+    sx += innW;
+  });
+  doc.text('Final', sx + finalColW / 2, y + 5.5, { align: 'center' });
+  y += scoreRowH;
+
+  // Score data rows
+  scoreRows.forEach(({ label, final }, rowIdx) => {
+    const rowBg: [number,number,number] = rowIdx % 2 === 0 ? WHITE : ROW_ALT;
+    doc.setFillColor(...rowBg);
+    doc.rect(margin, y, tableContentW, scoreRowH, 'F');
+    doc.setDrawColor(...BORDER);
+    doc.rect(margin, y, tableContentW, scoreRowH, 'S');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(...DARK);
+    sx = margin;
+    doc.text(label, sx + 3, y + 5.5);
+    sx += scoreLabelW;
+    INNINGS.forEach(() => {
+      doc.setDrawColor(...BORDER);
+      doc.line(sx, y, sx, y + scoreRowH);
+      sx += innW;
+    });
+    doc.setDrawColor(...BORDER);
+    doc.line(sx, y, sx, y + scoreRowH);
+    if (final) {
+      doc.text(final, sx + finalColW / 2, y + 5.5, { align: 'center' });
+    }
+    y += scoreRowH;
+  });
 
   doc.save(
     `GameCard-${game.opponent.replace(/\s+/g, '_')}-${new Date(game.starttime).toLocaleDateString('en-CA')}.pdf`,
