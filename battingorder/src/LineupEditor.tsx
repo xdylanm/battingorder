@@ -546,15 +546,37 @@ export default function LineupEditor({ game, onClose }: Props) {
         .select('player_id, game_id, positions, is_scratch')
         .in('game_id', gameIds);
 
+      // Group entries by game so we can compute per-game scratch sit credit
+      const entriesByGame: Record<string, { player_id: string; positions: string[]; is_scratch: boolean }[]> = {};
       for (const entry of entries ?? []) {
-        if (entry.is_scratch) continue;
-        const limit = inningsMap[entry.game_id] ?? 9;
-        const positions: string[] = (entry.positions ?? []).slice(0, limit);
-        if (!totals[entry.player_id]) totals[entry.player_id] = { sits: 0, infield: 0, outfield: 0 };
-        for (const pos of positions) {
-          if (pos === 'X') totals[entry.player_id].sits++;
-          else if (INFIELD_POS.has(pos)) totals[entry.player_id].infield++;
-          else if (OUTFIELD_POS.has(pos)) totals[entry.player_id].outfield++;
+        if (!entriesByGame[entry.game_id]) entriesByGame[entry.game_id] = [];
+        entriesByGame[entry.game_id].push(entry);
+      }
+
+      for (const [gameId, gameEntries] of Object.entries(entriesByGame)) {
+        const limit = inningsMap[gameId] ?? 9;
+        const activeEntries = gameEntries.filter(e => !e.is_scratch);
+        const scratchEntries = gameEntries.filter(e => e.is_scratch);
+
+        // Accumulate sits/infield/outfield for active players, tracking total sits for credit calc
+        let totalGameSits = 0;
+        for (const entry of activeEntries) {
+          const positions: string[] = (entry.positions ?? []).slice(0, limit);
+          if (!totals[entry.player_id]) totals[entry.player_id] = { sits: 0, infield: 0, outfield: 0 };
+          for (const pos of positions) {
+            if (pos === 'X') { totals[entry.player_id].sits++; totalGameSits++; }
+            else if (INFIELD_POS.has(pos)) totals[entry.player_id].infield++;
+            else if (OUTFIELD_POS.has(pos)) totals[entry.player_id].outfield++;
+          }
+        }
+
+        // Award scratch sit credit: round(total sits / active player count)
+        const scratchCredit = activeEntries.length > 0
+          ? Math.round(totalGameSits / activeEntries.length)
+          : 0;
+        for (const entry of scratchEntries) {
+          if (!totals[entry.player_id]) totals[entry.player_id] = { sits: 0, infield: 0, outfield: 0 };
+          totals[entry.player_id].sits += scratchCredit;
         }
       }
     }
