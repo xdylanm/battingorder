@@ -88,7 +88,8 @@ function chooseSharedOf(
 // Zone-rotation grid builder.
 //
 // Phase 1 – Lock P/C from pitching schedule; anchor 2nd pitcher (OF→X→P) and 2nd catcher (X→OF→C).
-// Phase 2 – Distribute remaining sits (0-4) by sit_count priority, no back-to-back.
+// Phase 2 – Pre-compute per-player sit budget via round-robin on a fixed priority list (season sits
+//            + forced sits ASC), then schedule sit innings from that budget (no back-to-back).
 // Phase 3 – Baton-pass: inn-0 sitters (Group A) reserve a field pos for inn 1+2;
 //            inn-1 sitters (Group B) are assigned that position for inn 0.
 // Phase 4 – Remaining players without inn 0/1 positions get the same position for both innings.
@@ -146,26 +147,59 @@ function buildGrid(
     if (grid[catcher2Id][1] === '') grid[catcher2Id][1] = sharedOf;
   }
 
-  // ── PHASE 2: Distribute remaining sits ───────────────────────────────────
+  // ── PHASE 2: Pre-compute sit budget, then schedule ───────────────────────
 
   if (sitsPerInning > 0) {
-    for (let inn = 0; inn < 5; inn++) {
-      const alreadySitting = orderedIds.filter(id => grid[id][inn] === 'X').length;
-      const need = Math.max(0, sitsPerInning - alreadySitting);
-      if (need === 0) continue;
+    const numInnings = 5;
+    const totalSitSlots = sitsPerInning * numInnings;
 
-      const cannotSit = new Set<string>();
-      orderedIds.forEach(id => { if (grid[id][inn] !== '') cannotSit.add(id); });
-      if (inn > 0) orderedIds.forEach(id => { if (grid[id][inn - 1] === 'X') cannotSit.add(id); });
+    // Count sits already locked in by Phase 1 anchor patterns
+    const forcedSits: Record<string, number> = {};
+    orderedIds.forEach(id => {
+      forcedSits[id] = grid[id].slice(0, numInnings).filter(p => p === 'X').length;
+    });
+    const forcedTotal = orderedIds.reduce((sum, id) => sum + forcedSits[id], 0);
+    let remainingSlots = totalSitSlots - forcedTotal;
 
-      const eligible = orderedIds
-        .filter(id => !cannotSit.has(id))
-        .map(id => ({ id, seasonSits: playerMap[id]?.sit_count ?? 0, gameSits: gameSitCounts[id] }))
-        .sort((a, b) => b.seasonSits !== a.seasonSits ? b.seasonSits - a.seasonSits : a.gameSits - b.gameSits);
+    // Fixed priority list: sort by (seasonSits + forcedSits) ASC so players who already
+    // have forced game sits are deprioritised; tiebreak by batting order (index).
+    const priorityList = [...orderedIds].sort((a, b) => {
+      const aTotal = (playerMap[a]?.sit_count ?? 0) + forcedSits[a];
+      const bTotal = (playerMap[b]?.sit_count ?? 0) + forcedSits[b];
+      if (aTotal !== bTotal) return aTotal - bTotal;
+      return orderedIds.indexOf(a) - orderedIds.indexOf(b);
+    });
+
+    // Round-robin through the priority list to assign extra sit slots.
+    // Each player gets at most one extra sit per pass through the list.
+    const extraSits: Record<string, number> = {};
+    orderedIds.forEach(id => { extraSits[id] = 0; });
+    for (let pi = 0; pi < priorityList.length * 2 && remainingSlots > 0; pi++) {
+      extraSits[priorityList[pi % priorityList.length]]++;
+      remainingSlots--;
+    }
+
+    // sitBudget = total sits this player should have this game (forced + extra)
+    const sitBudget: Record<string, number> = {};
+    orderedIds.forEach(id => { sitBudget[id] = forcedSits[id] + extraSits[id]; });
+
+    // Schedule: fill each inning from the priority list, respecting budget and no back-to-back.
+    for (let inn = 0; inn < numInnings; inn++) {
+      const need = sitsPerInning - orderedIds.filter(id => grid[id][inn] === 'X').length;
+      if (need <= 0) continue;
+
+      const eligible = priorityList.filter(id => {
+        const scheduledSoFar = grid[id].slice(0, inn).filter(p => p === 'X').length;
+        return (
+          grid[id][inn] === '' &&                            // not already assigned this inning
+          (inn === 0 || grid[id][inn - 1] !== 'X') &&       // no back-to-back sits
+          scheduledSoFar < sitBudget[id]                     // has remaining budget
+        );
+      });
 
       for (let i = 0; i < need && i < eligible.length; i++) {
-        grid[eligible[i].id][inn] = 'X';
-        gameSitCounts[eligible[i].id]++;
+        grid[eligible[i]][inn] = 'X';
+        gameSitCounts[eligible[i]]++;
       }
     }
   }

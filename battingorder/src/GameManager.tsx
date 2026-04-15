@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import { Button, TextField, List, ListItem, ListItemText, IconButton, Box, Dialog, DialogTitle, DialogContent, DialogActions, Divider, Typography } from '@mui/material';
+import { Button, TextField, List, ListItem, ListItemText, IconButton, Box, Dialog, DialogTitle, DialogContent, DialogActions, Divider, Typography, Chip } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import type { Game } from './types';
@@ -12,7 +12,8 @@ interface Props {
 export default function GameManager({ onSelectGame }: Props) {
   const [games, setGames] = useState<Game[]>([]);
   const [open, setOpen] = useState(false);
-  const [showPast, setShowPast] = useState(false);
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
   const [form, setForm] = useState({
     starttime: '',
     location: '',
@@ -70,10 +71,15 @@ export default function GameManager({ onSelectGame }: Props) {
 
   const now = new Date();
   const nonDefaultGames = games.filter(g => !g.tags?.includes('default'));
+  const recentGames = nonDefaultGames.filter(g => new Date(g.starttime) < now && !g.is_complete).reverse();
   const upcomingGames = nonDefaultGames.filter(g => new Date(g.starttime) >= now);
-  const pastGames = nonDefaultGames.filter(g => new Date(g.starttime) < now).reverse();
+  const completedGames = nonDefaultGames.filter(g => new Date(g.starttime) < now && g.is_complete).reverse();
+  const visibleUpcoming = showAllUpcoming ? upcomingGames : upcomingGames.slice(0, 5);
 
   function GameListItem({ game }: { game: Game }) {
+    const scoreStr = game.our_score != null && game.opponent_score != null
+      ? ` · ${game.our_score}–${game.opponent_score}`
+      : '';
     return (
       <ListItem secondaryAction={
         <Box sx={{ display: 'flex', gap: 1 }}>
@@ -86,7 +92,12 @@ export default function GameManager({ onSelectGame }: Props) {
         </Box>
       }>
         <ListItemText
-          primary={`${new Date(game.starttime).toLocaleString()} — ${game.opponent} @ ${game.location}`}
+          primary={
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              <span>{new Date(game.starttime).toLocaleString()} — {game.opponent} @ {game.location}{scoreStr}</span>
+              {game.is_complete && <Chip label="✓ Final" color="success" size="small" />}
+            </Box>
+          }
           secondary={game.tags?.length ? `Tags: ${game.tags.join(', ')}` : ''}
         />
       </ListItem>
@@ -140,20 +151,44 @@ export default function GameManager({ onSelectGame }: Props) {
           <ListItem>Loading...</ListItem>
         ) : (
           <>
+            {/* Recent: past games not yet finalized */}
+            {recentGames.length > 0 && (
+              <>
+                <Typography variant="caption" sx={{ px: 2, color: 'text.secondary', display: 'block', mt: 1 }}>Recent (not finalized)</Typography>
+                {recentGames.map(game => <GameListItem key={game.id} game={game} />)}
+                <Divider sx={{ my: 1 }} />
+              </>
+            )}
+
+            {/* Upcoming */}
+            <Typography variant="caption" sx={{ px: 2, color: 'text.secondary', display: 'block', mt: 1 }}>Upcoming</Typography>
             {upcomingGames.length === 0 && (
               <ListItem><ListItemText primary="No upcoming games" /></ListItem>
             )}
-            {upcomingGames.map(game => <GameListItem key={game.id} game={game} />)}
-            <Divider sx={{ my: 1 }} />
-            <Box sx={{ px: 2, py: 0.5 }}>
-              <Button size="small" onClick={() => setShowPast(p => !p)}>
-                {showPast ? 'Hide Past Games' : `Show Past Games (${pastGames.length})`}
-              </Button>
-            </Box>
-            {showPast && (
+            {visibleUpcoming.map(game => <GameListItem key={game.id} game={game} />)}
+            {upcomingGames.length > 5 && (
+              <Box sx={{ px: 2, py: 0.5 }}>
+                <Button size="small" onClick={() => setShowAllUpcoming(p => !p)}>
+                  {showAllUpcoming ? 'Show fewer' : `Show all ${upcomingGames.length} upcoming`}
+                </Button>
+              </Box>
+            )}
+
+            {/* Completed */}
+            {completedGames.length > 0 && (
               <>
-                <Typography variant="caption" sx={{ px: 2, color: 'text.secondary' }}>Past Games</Typography>
-                {pastGames.map(game => <GameListItem key={game.id} game={game} />)}
+                <Divider sx={{ my: 1 }} />
+                <Box sx={{ px: 2, py: 0.5 }}>
+                  <Button size="small" onClick={() => setShowCompleted(p => !p)}>
+                    {showCompleted ? 'Hide Completed Games' : `Show Completed Games (${completedGames.length})`}
+                  </Button>
+                </Box>
+                {showCompleted && (
+                  <>
+                    <Typography variant="caption" sx={{ px: 2, color: 'text.secondary', display: 'block' }}>Completed</Typography>
+                    {completedGames.map(game => <GameListItem key={game.id} game={game} />)}
+                  </>
+                )}
               </>
             )}
           </>

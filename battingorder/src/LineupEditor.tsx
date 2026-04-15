@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Box, Typography, Paper, Chip, Select, MenuItem, FormControl,
-  Button, Divider, Alert, Tooltip, IconButton, CircularProgress,
+  Button, Divider, Alert, IconButton, CircularProgress,
   FormControlLabel, Checkbox, Table, TableBody, TableCell,
   TableHead, TableRow, Menu, InputBase, TextField,
 } from '@mui/material';
@@ -37,6 +37,7 @@ function PositionCell({ value, onChange, conflict, disabled, missingPositions, a
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const isAvoid = value && avoidPositions?.includes(value);
   const cellColor =
+    disabled ? '#ececec' :            // disabled inning → dimmed
     value === 'X' ? '#e0e0e0' :        // sit → gray
     isAvoid ? '#ffe0e0' :              // avoid-position → red
     value === '' ? '#f5f5f5' :
@@ -134,11 +135,12 @@ interface SortableRowProps {
   conflictCells: Set<number>;
   jerseyOverride: string | null;
   missingPositionsByInning: Record<number, string[]>;
+  inningsPlayed: number | null;
   onCellChange: (inning: number, val: string) => void;
   onJerseyChange: (val: string) => void;
 }
 
-function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerseyOverride, missingPositionsByInning, onCellChange, onJerseyChange }: SortableRowProps) {
+function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerseyOverride, missingPositionsByInning, inningsPlayed, onCellChange, onJerseyChange }: SortableRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
 
@@ -176,6 +178,7 @@ function SortableRow({ id, order, player, entry, isScratch, conflictCells, jerse
               value={entry.positions[innIdx] ?? ''}
               onChange={val => onCellChange(innIdx, val)}
               conflict={conflictCells.has(innIdx)}
+              disabled={inningsPlayed !== null && innIdx >= inningsPlayed}
               missingPositions={missingPositionsByInning[innIdx]}
               avoidPositions={player.avoid_positions}
             />
@@ -276,6 +279,10 @@ export default function LineupEditor({ game, onClose }: Props) {
   const [populated, setPopulated] = useState(false);
   const [jerseyOverrides, setJerseyOverrides] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState(game.notes ?? '');
+  const [ourScore, setOurScore] = useState<number | null>(game.our_score ?? null);
+  const [opponentScore, setOpponentScore] = useState<number | null>(game.opponent_score ?? null);
+  const [inningsPlayed, setInningsPlayed] = useState<number | null>(game.innings_played ?? null);
+  const [isComplete, setIsComplete] = useState<boolean>(game.is_complete ?? false);
   const battingOrderRef = useRef<string[]>([]);
   battingOrderRef.current = battingOrder;
 
@@ -446,17 +453,14 @@ export default function LineupEditor({ game, onClose }: Props) {
 
   // ─── Save ────────────────────────────────────────────────────────────────────
 
-  const handleSave = async () => {
-    setSaving(true);
-    setSaveError(null);
-    setSaveSuccess(false);
-
+  // Returns true if the save succeeded (lineup + game fields persisted).
+  const performSave = async (): Promise<boolean> => {
     try {
       const { error: deleteErr } = await supabase.from('lineup').delete().eq('game_id', game.id);
       if (deleteErr) {
         console.error('lineup delete failed', deleteErr);
         setSaveError(`Save failed (delete): ${deleteErr.message}`);
-        return;
+        return false;
       }
 
       const entries = [
@@ -482,13 +486,13 @@ export default function LineupEditor({ game, onClose }: Props) {
       if (insertErr) {
         console.error('lineup insert failed', insertErr);
         setSaveError(`Save failed (insert): ${insertErr.message}`);
-        return;
+        return false;
       }
 
-      // Best-effort: save pitcher assignments and notes — requires those columns on games table
+      // Best-effort: save pitcher assignments, notes, and game result fields
       const { error: updateErr } = await supabase
         .from('games')
-        .update({ pitcher_assignments: pitcherAssignments, notes })
+        .update({ pitcher_assignments: pitcherAssignments, notes, our_score: ourScore, opponent_score: opponentScore, innings_played: inningsPlayed })
         .eq('id', game.id);
       if (updateErr) {
         console.error('games update failed', updateErr);
@@ -496,28 +500,107 @@ export default function LineupEditor({ game, onClose }: Props) {
         setSaveError(`Lineup saved, but game fields failed: ${updateErr.message}`);
       }
 
-      // Increment season outfield_innings and infield_innings per player
-      const INFIELD_POS = new Set(['1B', '2B', '3B', 'SS']);
-      const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']);
-      for (const playerId of battingOrder) {
-        const positions = grid[playerId] ?? [];
-        const ofDelta = positions.filter(p => OUTFIELD_POS.has(p)).length;
-        const ifDelta = positions.filter(p => INFIELD_POS.has(p)).length;
-        if (ofDelta === 0 && ifDelta === 0) continue;
-        const player = playerMap[playerId];
-        await supabase.from('players').update({
-          outfield_innings: (player?.outfield_innings ?? 0) + ofDelta,
-          infield_innings: (player?.infield_innings ?? 0) + ifDelta,
-        }).eq('id', playerId);
-      }
-
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+      return true;
     } catch (e) {
       setSaveError(`Unexpected error: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setSaving(false);
+      return false;
     }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+    const ok = await performSave();
+    if (ok) {
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    }
+    setSaving(false);
+  };
+
+  // ─── Stat recompute ──────────────────────────────────────────────────────────
+
+  const recomputePlayerStats = async () => {
+    const INFIELD_POS = new Set(['1B', '2B', '3B', 'SS']);
+    const OUTFIELD_POS = new Set(['LF', 'CF', 'RF']);
+
+    // Fetch all completed games
+    const { data: completedGames } = await supabase
+      .from('games')
+      .select('id, innings_played')
+      .eq('is_complete', true);
+
+    const totals: Record<string, { sits: number; infield: number; outfield: number }> = {};
+
+    if (completedGames && completedGames.length > 0) {
+      const gameIds = completedGames.map((g: { id: string }) => g.id);
+      const inningsMap: Record<string, number | null> = {};
+      completedGames.forEach((g: { id: string; innings_played: number | null }) => {
+        inningsMap[g.id] = g.innings_played;
+      });
+
+      // Fetch all lineup entries for completed games
+      const { data: entries } = await supabase
+        .from('lineup')
+        .select('player_id, game_id, positions, is_scratch')
+        .in('game_id', gameIds);
+
+      for (const entry of entries ?? []) {
+        if (entry.is_scratch) continue;
+        const limit = inningsMap[entry.game_id] ?? 9;
+        const positions: string[] = (entry.positions ?? []).slice(0, limit);
+        if (!totals[entry.player_id]) totals[entry.player_id] = { sits: 0, infield: 0, outfield: 0 };
+        for (const pos of positions) {
+          if (pos === 'X') totals[entry.player_id].sits++;
+          else if (INFIELD_POS.has(pos)) totals[entry.player_id].infield++;
+          else if (OUTFIELD_POS.has(pos)) totals[entry.player_id].outfield++;
+        }
+      }
+    }
+
+    // Write totals to all players (zeroing those with no completed game entries)
+    const { data: allPlayersData } = await supabase.from('players').select('id');
+    for (const player of allPlayersData ?? []) {
+      const t = totals[player.id] ?? { sits: 0, infield: 0, outfield: 0 };
+      await supabase.from('players').update({
+        sit_count: t.sits,
+        outfield_innings: t.outfield,
+        infield_innings: t.infield,
+      }).eq('id', player.id);
+    }
+  };
+
+  // ─── Mark Complete / Reopen ──────────────────────────────────────────────────
+
+  const handleMarkComplete = async () => {
+    setSaving(true);
+    setSaveError(null);
+    const saved = await performSave();
+    if (!saved) { setSaving(false); return; }
+    const { error } = await supabase.from('games').update({ is_complete: true }).eq('id', game.id);
+    if (error) {
+      setSaveError(`Failed to mark complete: ${error.message}`);
+      setSaving(false);
+      return;
+    }
+    setIsComplete(true);
+    await recomputePlayerStats();
+    setSaving(false);
+  };
+
+  const handleReopen = async () => {
+    setSaving(true);
+    setSaveError(null);
+    const { error } = await supabase.from('games').update({ is_complete: false }).eq('id', game.id);
+    if (error) {
+      setSaveError(`Failed to reopen game: ${error.message}`);
+      setSaving(false);
+      return;
+    }
+    setIsComplete(false);
+    await recomputePlayerStats();
+    setSaving(false);
   };
 
   const handleSaveAsDefault = async () => {
@@ -666,13 +749,14 @@ export default function LineupEditor({ game, onClose }: Props) {
                   <TableCell sx={{ width: 32, textAlign: 'center' }}>#</TableCell>
                   <TableCell sx={{ width: 36, textAlign: 'center' }}>Jsy</TableCell>
                   <TableCell sx={{ minWidth: 120 }}>Name</TableCell>
-                  {INNINGS.map(i => (
-                    <TableCell key={i} sx={{ textAlign: 'center', fontWeight: 700, p: 0.5, width: 48 }}>
-                      <Tooltip title={i > 5 ? 'Optional' : ''}>
-                        <span style={{ color: i > 5 ? '#aaa' : 'inherit' }}>{i}</span>
-                      </Tooltip>
-                    </TableCell>
-                  ))}
+                  {INNINGS.map((inn, innIdx) => {
+                    const isDimmed = inningsPlayed !== null && inn > inningsPlayed;
+                    return (
+                      <TableCell key={inn} sx={{ textAlign: 'center', fontWeight: 700, p: 0.5, width: 48, opacity: isDimmed ? 0.35 : 1 }}>
+                        <span style={{ color: inn > 5 ? '#aaa' : 'inherit' }}>{inn}</span>
+                      </TableCell>
+                    );
+                  })}
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -690,6 +774,7 @@ export default function LineupEditor({ game, onClose }: Props) {
                       conflictCells={conflictCellsByPlayer[playerId] ?? new Set()}
                       jerseyOverride={jerseyOverrides[playerId] ?? null}
                       missingPositionsByInning={missingPositionsByInning}
+                      inningsPlayed={inningsPlayed}
                       onCellChange={(inning, val) => handleCellChange(playerId, inning, val)}
                       onJerseyChange={val => setJerseyOverrides(prev => ({ ...prev, [playerId]: val }))}
                     />
@@ -736,6 +821,43 @@ export default function LineupEditor({ game, onClose }: Props) {
         />
       </Paper>
 
+      {/* Game result */}
+      <Paper sx={{ p: 2, mt: 2 }}>
+        <Typography variant="h6" gutterBottom>
+          Game Result
+          {isComplete && <Chip label="✓ Final" color="success" size="small" sx={{ ml: 2 }} />}
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+          <TextField
+            label="Blue Jays"
+            type="number"
+            size="small"
+            value={ourScore ?? ''}
+            onChange={e => setOurScore(e.target.value === '' ? null : Number(e.target.value))}
+            slotProps={{ htmlInput: { min: 0 } }}
+            sx={{ width: 120 }}
+          />
+          <TextField
+            label="Opponent"
+            type="number"
+            size="small"
+            value={opponentScore ?? ''}
+            onChange={e => setOpponentScore(e.target.value === '' ? null : Number(e.target.value))}
+            slotProps={{ htmlInput: { min: 0 } }}
+            sx={{ width: 120 }}
+          />
+          <TextField
+            label="Innings played"
+            type="number"
+            size="small"
+            value={inningsPlayed ?? ''}
+            onChange={e => setInningsPlayed(e.target.value === '' ? null : Math.min(9, Math.max(1, Number(e.target.value))))}
+            slotProps={{ htmlInput: { min: 1, max: 9 } }}
+            sx={{ width: 140 }}
+          />
+        </Box>
+      </Paper>
+
       {/* Actions */}
       <Box sx={{ display: 'flex', gap: 2, mt: 2, flexWrap: 'wrap', alignItems: 'center' }}>
         <Button
@@ -747,6 +869,20 @@ export default function LineupEditor({ game, onClose }: Props) {
         >
           {saving ? 'Saving…' : saveSuccess ? 'Saved ✓' : 'Save'}
         </Button>
+        {isComplete ? (
+          <Button variant="outlined" color="warning" onClick={handleReopen} disabled={saving}>
+            Reopen
+          </Button>
+        ) : (
+          <Button
+            variant="contained"
+            color="success"
+            onClick={handleMarkComplete}
+            disabled={saving || ourScore === null || opponentScore === null || !inningsPlayed}
+          >
+            Mark Complete
+          </Button>
+        )}
         <Button
           variant="outlined"
           onClick={handleSaveAsDefault}

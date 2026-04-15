@@ -21,6 +21,10 @@ export interface Game {
   tags: string[];
   pitcher_assignments?: PitcherAssignment[] | null;
   notes?: string | null;
+  is_complete?: boolean;
+  innings_played?: number | null;
+  our_score?: number | null;
+  opponent_score?: number | null;
 }
 
 export interface LineupEntry {
